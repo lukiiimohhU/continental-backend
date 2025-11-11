@@ -1335,7 +1335,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=[
         "http://localhost:3000",
-        "continental-jj02o6xvi-luks-projects-947ece4f.vercel.app"
+        "http://127.0.0.1:3000",
+        "https://continental-nine.vercel.app"
     ],
     allow_methods=["*"],
     allow_headers=["*"],
