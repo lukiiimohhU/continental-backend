@@ -1304,15 +1304,36 @@ async def handle_player_disconnect(room_code: str, player_id: str):
         "player_id": player_id
     })
 
+# Root endpoint for health checks
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "message": "Continental Card Game Backend API",
+        "version": "1.0",
+        "endpoints": {
+            "api": "/api",
+            "websocket": "/api/ws/{room_code}/{player_id}"
+        }
+    }
+
 # Include the router in the main app
 app.include_router(api_router)
 
-# CORS middleware
-cors_origins = os.environ.get('CORS_ORIGINS', '').split(',')
+# CORS middleware - configuración mejorada
+cors_origins_env = os.environ.get('CORS_ORIGINS', '')
+if cors_origins_env:
+    cors_origins = [origin.strip() for origin in cors_origins_env.split(',') if origin.strip()]
+else:
+    # Valores por defecto para desarrollo
+    cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+logger.info(f"CORS configurado para orígenes: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=cors_origins,  # Ahora dinámico
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
