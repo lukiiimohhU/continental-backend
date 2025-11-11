@@ -1333,7 +1333,10 @@ logger.info(f"CORS configurado para orígenes: {cors_origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=cors_origins,
+    allow_origins=[
+        "http://localhost:3000",
+        "continental-jj02o6xvi-luks-projects-947ece4f.vercel.app"
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
