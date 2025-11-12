@@ -875,7 +875,30 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
             'type': meld['type'],
             'cards': meld_cards  # Ya sorteados si es run
         })
-    
+
+    # Verificar que no haya cartas duplicadas entre las combinaciones
+    if len(all_card_ids) != len(set(all_card_ids)):
+        current_warnings = current_player.get('warnings', 0)
+        current_player['warnings'] = current_warnings + 1
+
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": f"No puedes usar la misma carta en múltiples combinaciones. Advertencias: {current_player['warnings']}"
+        })
+
+        if current_player['warnings'] >= 2:
+            if game_state['deck']:
+                penalty_card = game_state['deck'].pop()
+                hand.append(penalty_card)
+                await manager.send_to_player(room_code, player_id, {
+                    "type": "notification",
+                    "message": "2 advertencias: carta de penalización añadida"
+                })
+            current_player['warnings'] = 0
+
+        await broadcast_game_state(room_code)
+        return
+
     valid_group, group_message = validate_meld_group(validated_melds, game_state['round'])
     
     if not valid_group:
