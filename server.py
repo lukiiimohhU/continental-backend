@@ -907,8 +907,9 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
     game_state['player_melds'][player_id] = validated_melds
     game_state['players_laid_down'].add(player_id)
 
-    # NUEVO: Si no había bajado antes y ahora sí, marcar potencial went_out_in_one_turn
-    if had_not_laid_down_before:
+    # NUEVO: Si no había bajado antes y le quedan 0-1 cartas, marcar went_out_in_one_turn
+    # 0 cartas = bajó todas, 1 carta = necesita descartar, ambos cuentan como "un turno"
+    if had_not_laid_down_before and len(hand) <= 1:
         game_state['players_who_went_out_in_one_turn'].add(player_id)
     
     await manager.broadcast_to_room(room_code, {
