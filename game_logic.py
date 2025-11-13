@@ -114,36 +114,86 @@ def validate_set(cards: List[Dict]) -> Tuple[bool, str]:
     return True, "Trío válido"
 
 def validate_run(cards: List[Dict]) -> Tuple[bool, str]:
-    """Validate run with cyclic support (K-A-2-3)"""
+    """Validate run respecting card order (Jokers can be at start/end)"""
     if len(cards) < 4:
         return False, "Una escalera necesita al menos 4 cartas"
-    
+
     jokers = [c for c in cards if c['is_joker']]
     normal_cards = [c for c in cards if not c['is_joker']]
-    
+
     if len(jokers) >= len(normal_cards):
         return False, "Debe haber más cartas normales que Jokers"
-    
+
     if len(normal_cards) == 0:
         return False, "No puede haber solo Jokers"
-    
+
     suits = [c['suit'] for c in normal_cards]
     if len(set(suits)) > 1:
         return False, "Todas las cartas deben ser del mismo palo"
-    
-    normal_values = sorted([get_rank_value(c['rank']) for c in normal_cards])
-    total_length = len(cards)
-    num_jokers = len(jokers)
-    
-    # Try non-cyclic first
-    if try_sequence(normal_values, num_jokers, total_length, False):
-        return True, "Escalera válida"
-    
-    # Try cyclic (K-A-2...)
-    if try_sequence(normal_values, num_jokers, total_length, True):
-        return True, "Escalera válida (cíclica)"
-    
-    return False, "Las cartas no forman una secuencia válida"
+
+    # Respect order: extract positions and values of normal cards
+    card_positions = []
+    for i, card in enumerate(cards):
+        if not card['is_joker']:
+            card_positions.append((i, get_rank_value(card['rank'])))
+
+    # Check if sequence is valid based on positions
+    if not card_positions:
+        return False, "No puede haber solo Jokers"
+
+    # Sort by position to maintain order
+    card_positions.sort(key=lambda x: x[0])
+
+    # Extract just the values in order
+    values_in_order = [val for pos, val in card_positions]
+
+    # Calculate expected sequence based on first and last normal cards
+    first_pos, first_val = card_positions[0]
+    last_pos, last_val = card_positions[-1]
+
+    # Number of jokers before first normal card
+    jokers_before = first_pos
+    # Number of jokers after last normal card
+    jokers_after = len(cards) - 1 - last_pos
+    # Number of jokers in between
+    jokers_between = len(jokers) - jokers_before - jokers_after
+
+    # Calculate the starting value (accounting for jokers before)
+    start_val = first_val - jokers_before
+    # Calculate the ending value (accounting for jokers after)
+    end_val = last_val + jokers_after
+
+    # Check if values go out of valid range (1-13 for normal, 14 for Ace-high)
+    if start_val < 1:
+        return False, "La secuencia va por debajo del AS"
+    if end_val > 14:
+        return False, "La secuencia va por encima del AS"
+
+    # Verify that normal cards form a valid sequence with gaps for jokers
+    expected_length = end_val - start_val + 1
+    if expected_length != len(cards):
+        return False, "Las cartas no forman una secuencia válida"
+
+    # Check that normal cards are in the right positions
+    expected_positions = set(range(start_val, end_val + 1))
+    actual_values = set()
+
+    for pos, val in card_positions:
+        # Calculate what value this card should be
+        expected_val = start_val + pos
+        actual_values.add(val)
+        if val != expected_val:
+            return False, "Las cartas no están en orden consecutivo"
+
+    # Check no consecutive jokers in the middle
+    if jokers_between > 0:
+        # Check gaps between consecutive normal cards
+        for i in range(len(values_in_order) - 1):
+            gap = values_in_order[i + 1] - values_in_order[i] - 1
+            if gap > 1:
+                return False, "No puede haber Jokers consecutivos"
+
+    return True, "Escalera válida"
 
 def try_sequence(values, num_jokers, total_length, cyclic):
     """Try to form a sequence with given values and jokers"""

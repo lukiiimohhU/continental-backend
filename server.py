@@ -24,10 +24,10 @@ def find_closest_next_player(current_index: int, requesting_players: List[str], 
     """Find the requesting player with the nearest turn after current player"""
     if not requesting_players:
         return None
-    
+
     num_players = len(all_players)
     player_id_to_index = {p['id']: i for i, p in enumerate(all_players)}
-    
+
     # Calculate distance from current player for each requester
     distances = []
     for req_player_id in requesting_players:
@@ -36,13 +36,29 @@ def find_closest_next_player(current_index: int, requesting_players: List[str], 
             # Calculate forward distance (wrapping around)
             distance = (req_index - current_index - 1) % num_players
             distances.append((distance, req_player_id))
-    
+
     if distances:
         # Sort by distance and return closest
         distances.sort()
         return distances[0][1]
-    
+
     return None
+
+def check_went_out_in_one_turn(game_state: Dict, player_id: str) -> bool:
+    """
+    Check if player went out in one turn by comparing:
+    - Had not laid down at turn start
+    - Had X cards at turn start (after drawing)
+    - Now has 0 cards
+    """
+    had_not_laid_down = game_state.get('had_not_laid_down_at_turn_start', {}).get(player_id, False)
+    turn_start_size = game_state.get('turn_start_hand_size', {}).get(player_id, 0)
+
+    # Went out in one turn if:
+    # 1. Hadn't laid down when turn started
+    # 2. Had cards when turn started (after drawing)
+    # 3. Now has 0 cards
+    return had_not_laid_down and turn_start_size > 0
 
 # Configure logging FIRST before using it
 logging.basicConfig(
@@ -275,7 +291,10 @@ async def start_game(room_code: str, player_id: str):
         player_hands[player['id']] = [deck.pop() for _ in range(initial_cards)]
     
     discard_pile = [deck.pop()]
-    
+
+    # Select random starting player
+    initial_player_index = random.randint(0, len(room['players']) - 1)
+
     game_state = {
         'round': 1,
         'deck': deck,
@@ -284,7 +303,8 @@ async def start_game(room_code: str, player_id: str):
         'player_melds': {player['id']: [] for player in room['players']},
         'players': room['players'],
         'players_laid_down': set(),
-        'current_player_index': 0,
+        'current_player_index': initial_player_index,
+        'initial_player_index': initial_player_index,  # Track initial starting player
         'turn_phase': 'draw',
         'has_drawn': False,
         'waiting_for_requests': False,
@@ -296,7 +316,9 @@ async def start_game(room_code: str, player_id: str):
         'players_who_went_out_in_one_turn': set(),
         'round_ended': False,
         'round_winner_name': None,
-        'players_who_got_discard_card': set(),  # NUEVO
+        'players_who_got_discard_card': set(),
+        'turn_start_hand_size': {},  # Track hand size when turn starts (after drawing)
+        'had_not_laid_down_at_turn_start': {},  # Track if player hadn't laid down when turn started
     }
     
     game_states[room_code] = game_state
@@ -424,7 +446,11 @@ async def draw_card(room_code: str, player_id: str, from_pile: str):
                 "type": "notification",
                 "message": f"{current_player['name']} robó del descarte"
             })
-    
+
+    # Track hand size and laid down status at start of turn (after drawing)
+    game_state['turn_start_hand_size'][player_id] = len(hand)
+    game_state['had_not_laid_down_at_turn_start'][player_id] = player_id not in game_state['players_laid_down']
+
     await broadcast_game_state(room_code)
 
 def get_card_value(card):
@@ -461,10 +487,10 @@ async def handle_player_out(room_code: str, player_id: str):
     
     player_name = player['name']
     current_round = game_state['round']
-    
+
     # Verificar si el jugador bajó en un solo turno
-    went_out_in_one_turn = player_id in game_state.get('players_who_went_out_in_one_turn', set())
-    
+    went_out_in_one_turn = check_went_out_in_one_turn(game_state, player_id)
+
     if went_out_in_one_turn:
         # Penalización: -10 puntos por ronda
         penalty = -10 * current_round
@@ -865,11 +891,7 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
             await broadcast_game_state(room_code)
             return
 
-        # NUEVO: Sortear runs para que Jokers estén en su posición
-        if meld['type'] == 'run':
-            from game_logic import sort_run_cards
-            meld_cards = sort_run_cards(meld_cards)
-        
+        # Respetar el orden de selección del jugador (importante para Jokers)
         all_card_ids.extend(meld['card_ids'])
         validated_melds.append({
             'type': meld['type'],
@@ -926,15 +948,10 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
     for card_id in all_card_ids:
         card = next(c for c in hand if c['id'] == card_id)
         hand.remove(card)
-    
+
     game_state['player_melds'][player_id] = validated_melds
     game_state['players_laid_down'].add(player_id)
 
-    # NUEVO: Si no había bajado antes y le quedan 0-1 cartas, marcar went_out_in_one_turn
-    # 0 cartas = bajó todas, 1 carta = necesita descartar, ambos cuentan como "un turno"
-    if had_not_laid_down_before and len(hand) <= 1:
-        game_state['players_who_went_out_in_one_turn'].add(player_id)
-    
     await manager.broadcast_to_room(room_code, {
         "type": "notification",
         "message": f"{current_player['name']} bajó sus combinaciones"
@@ -942,7 +959,7 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
     
     # Check if player has 0 cards after laying down
     if len(hand) == 0:
-        went_out_in_one_turn = player_id in game_state.get('players_who_went_out_in_one_turn', set())
+        went_out_in_one_turn = check_went_out_in_one_turn(game_state, player_id)
         await end_round(room_code, player_id, went_out_in_one_turn)
         return
     
@@ -1059,7 +1076,7 @@ async def lay_off_card(room_code: str, player_id: str, card_id: str, target_play
     
     # Check if player has 0 cards
     if len(hand) == 0:
-        went_out_in_one_turn = False
+        went_out_in_one_turn = check_went_out_in_one_turn(game_state, player_id)
         await end_round(room_code, player_id, went_out_in_one_turn)
         return
     
@@ -1254,7 +1271,12 @@ async def setup_new_round(room_code: str):
     game_state['player_hands'] = player_hands
     game_state['player_melds'] = {player['id']: [] for player in game_state['players']}
     game_state['players_laid_down'] = set()
-    game_state['current_player_index'] = 0
+
+    # Rotate starting player for each round
+    initial_player = game_state.get('initial_player_index', 0)
+    num_players = len(game_state['players'])
+    game_state['current_player_index'] = (initial_player + game_state['round'] - 1) % num_players
+
     game_state['turn_phase'] = 'draw'
     game_state['has_drawn'] = False
     game_state['waiting_for_requests'] = False
@@ -1264,7 +1286,9 @@ async def setup_new_round(room_code: str):
     game_state['first_draw_of_round'] = True
     game_state['players_who_went_out_in_one_turn'] = set()
     game_state['players_who_got_discard_card'] = set()
-    
+    game_state['turn_start_hand_size'] = {}
+    game_state['had_not_laid_down_at_turn_start'] = {}
+
     for player in game_state['players']:
         player['warnings'] = 0
     
