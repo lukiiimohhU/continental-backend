@@ -855,8 +855,10 @@ async def lay_down_melds(room_code: str, player_id: str, melds: List[Dict]):
     had_not_laid_down_before = player_id not in game_state['players_laid_down']
     
     for meld in melds:
-        meld_cards = [c for c in hand if c['id'] in meld['card_ids']]
-        
+        # Create a dictionary for O(1) lookup while preserving frontend order
+        hand_dict = {c['id']: c for c in hand}
+        meld_cards = [hand_dict[card_id] for card_id in meld['card_ids'] if card_id in hand_dict]
+
         if len(meld_cards) != len(meld['card_ids']):
             await manager.send_to_player(room_code, player_id, {
                 "type": "error",
