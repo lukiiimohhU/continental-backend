@@ -114,7 +114,7 @@ def validate_set(cards: List[Dict]) -> Tuple[bool, str]:
     return True, "Trío válido"
 
 def validate_run(cards: List[Dict]) -> Tuple[bool, str]:
-    """Validate run respecting card order (Jokers can be at start/end)"""
+    """Validate run respecting card order (Jokers cannot be consecutive)"""
     if len(cards) < 4:
         return False, "Una escalera necesita al menos 4 cartas"
 
@@ -131,13 +131,17 @@ def validate_run(cards: List[Dict]) -> Tuple[bool, str]:
     if len(set(suits)) > 1:
         return False, "Todas las cartas deben ser del mismo palo"
 
-    # Respect order: extract positions and values of normal cards
+    # CRITICAL: Check for consecutive Jokers in ANY position
+    for i in range(len(cards) - 1):
+        if cards[i].get('is_joker') and cards[i + 1].get('is_joker'):
+            return False, "No puede haber Jokers consecutivos"
+
+    # Extract positions and values of normal cards (respecting order from frontend)
     card_positions = []
     for i, card in enumerate(cards):
         if not card['is_joker']:
             card_positions.append((i, get_rank_value(card['rank'])))
 
-    # Check if sequence is valid based on positions
     if not card_positions:
         return False, "No puede haber solo Jokers"
 
@@ -147,51 +151,98 @@ def validate_run(cards: List[Dict]) -> Tuple[bool, str]:
     # Extract just the values in order
     values_in_order = [val for pos, val in card_positions]
 
-    # Calculate expected sequence based on first and last normal cards
+    # Try non-cyclic sequence first
+    is_valid_normal, msg_normal = _validate_run_sequence(cards, card_positions, values_in_order, cyclic=False)
+    if is_valid_normal:
+        return True, "Escalera válida"
+
+    # If normal sequence fails, try cyclic (K-A wrapping)
+    # Cyclic only makes sense if we have high cards (J, Q, K) and Ace
+    has_ace = 1 in values_in_order or 14 in values_in_order
+    has_high_card = any(v >= 11 for v in values_in_order)
+
+    if has_ace and has_high_card:
+        is_valid_cyclic, msg_cyclic = _validate_run_sequence(cards, card_positions, values_in_order, cyclic=True)
+        if is_valid_cyclic:
+            return True, "Escalera válida"
+
+    # Return the non-cyclic error message as default
+    return False, msg_normal
+
+
+def _validate_run_sequence(cards: List[Dict], card_positions: List, values_in_order: List[int], cyclic: bool = False) -> Tuple[bool, str]:
+    """Helper function to validate a run sequence (cyclic or non-cyclic)"""
+
+    # Make a copy to avoid modifying original
+    card_positions = list(card_positions)
+    values_in_order = list(values_in_order)
+
+    # Adjust values for cyclic sequences
+    if cyclic:
+        # In cyclic mode, we need to detect if we're wrapping around K->A->2
+        # Strategy:
+        # 1. Convert all Aces (1) to 14
+        # 2. Detect if we have low cards (2-4) that come AFTER the Ace in position
+        # 3. Convert those low cards to virtual values (15, 16, 17, etc.)
+
+        has_ace = any(val == 1 for pos, val in card_positions)
+        ace_position = None
+
+        # Find Ace position if it exists
+        for pos, val in card_positions:
+            if val == 1:
+                ace_position = pos
+                break
+
+        adjusted_positions = []
+        for pos, val in card_positions:
+            if val == 1:
+                # Ace becomes 14
+                adjusted_positions.append((pos, 14))
+            elif has_ace and ace_position is not None and pos > ace_position and val <= 4:
+                # Low cards (2-4) AFTER Ace in position become 15, 16, 17, etc.
+                # 2 -> 15, 3 -> 16, 4 -> 17
+                adjusted_positions.append((pos, val + 13))
+            else:
+                adjusted_positions.append((pos, val))
+
+        card_positions = adjusted_positions
+        values_in_order = [val for pos, val in card_positions]
+
     first_pos, first_val = card_positions[0]
     last_pos, last_val = card_positions[-1]
 
-    # Number of jokers before first normal card
+    # Count jokers in different positions
     jokers_before = first_pos
-    # Number of jokers after last normal card
     jokers_after = len(cards) - 1 - last_pos
-    # Number of jokers in between
-    jokers_between = len(jokers) - jokers_before - jokers_after
 
-    # Calculate the starting value (accounting for jokers before)
+    # Calculate sequence range
     start_val = first_val - jokers_before
-    # Calculate the ending value (accounting for jokers after)
     end_val = last_val + jokers_after
 
-    # Check if values go out of valid range (1-13 for normal, 14 for Ace-high)
+    # Validate range
     if start_val < 1:
         return False, "La secuencia va por debajo del AS"
-    if end_val > 14:
-        return False, "La secuencia va por encima del AS"
 
-    # Verify that normal cards form a valid sequence with gaps for jokers
+    if cyclic:
+        # For cyclic, allow up to ~17-18 (A, 2, 3, 4, 5)
+        if end_val > 18:
+            return False, "La secuencia cíclica es demasiado larga"
+    else:
+        # Non-cyclic: strict range check (1-14)
+        if end_val > 14:
+            return False, "La secuencia va por encima del AS"
+
+    # Verify length
     expected_length = end_val - start_val + 1
     if expected_length != len(cards):
         return False, "Las cartas no forman una secuencia válida"
 
     # Check that normal cards are in the right positions
-    expected_positions = set(range(start_val, end_val + 1))
-    actual_values = set()
-
     for pos, val in card_positions:
-        # Calculate what value this card should be
         expected_val = start_val + pos
-        actual_values.add(val)
         if val != expected_val:
             return False, "Las cartas no están en orden consecutivo"
-
-    # Check no consecutive jokers in the middle
-    if jokers_between > 0:
-        # Check gaps between consecutive normal cards
-        for i in range(len(values_in_order) - 1):
-            gap = values_in_order[i + 1] - values_in_order[i] - 1
-            if gap > 1:
-                return False, "No puede haber Jokers consecutivos"
 
     return True, "Escalera válida"
 
