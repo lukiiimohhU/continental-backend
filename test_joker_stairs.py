@@ -43,13 +43,12 @@ cards_test5 = [
     {'is_joker': False, 'rank': '4', 'suit': 'clubs', 'id': 'c3'}
 ]
 
-# Test 6: Joker, Joker, 3, 4, 5 (all same suit) - Double Jokers at start (as A and 2)
+# Test 6: Q, Joker, A, 2 (all same suit) - Cyclic run with Joker as K
 cards_test6 = [
+    {'is_joker': False, 'rank': 'Q', 'suit': 'spades', 'id': 'c1'},
     {'is_joker': True, 'rank': 'Joker', 'suit': 'spades', 'id': 'j1'},
-    {'is_joker': True, 'rank': 'Joker', 'suit': 'spades', 'id': 'j2'},
-    {'is_joker': False, 'rank': '3', 'suit': 'spades', 'id': 'c1'},
-    {'is_joker': False, 'rank': '4', 'suit': 'spades', 'id': 'c2'},
-    {'is_joker': False, 'rank': '5', 'suit': 'spades', 'id': 'c3'}
+    {'is_joker': False, 'rank': 'A', 'suit': 'spades', 'id': 'c2'},
+    {'is_joker': False, 'rank': '2', 'suit': 'spades', 'id': 'c3'}
 ]
 
 # Test 7: A, 2, 3, 4 (all same suit) - Ace as 1
@@ -58,6 +57,32 @@ cards_test7 = [
     {'is_joker': False, 'rank': '2', 'suit': 'hearts', 'id': 'c2'},
     {'is_joker': False, 'rank': '3', 'suit': 'hearts', 'id': 'c3'},
     {'is_joker': False, 'rank': '4', 'suit': 'hearts', 'id': 'c4'}
+]
+
+# Test 8: K, A, 2, 3 (all same suit) - Cyclic run without Joker
+cards_test8 = [
+    {'is_joker': False, 'rank': 'K', 'suit': 'diamonds', 'id': 'c1'},
+    {'is_joker': False, 'rank': 'A', 'suit': 'diamonds', 'id': 'c2'},
+    {'is_joker': False, 'rank': '2', 'suit': 'diamonds', 'id': 'c3'},
+    {'is_joker': False, 'rank': '3', 'suit': 'diamonds', 'id': 'c4'}
+]
+
+# Test 9 (INVALID): Joker, Joker, 3, 4, 5 - Consecutive Jokers (should FAIL)
+cards_test9_invalid = [
+    {'is_joker': True, 'rank': 'Joker', 'suit': 'clubs', 'id': 'j1'},
+    {'is_joker': True, 'rank': 'Joker', 'suit': 'clubs', 'id': 'j2'},
+    {'is_joker': False, 'rank': '3', 'suit': 'clubs', 'id': 'c1'},
+    {'is_joker': False, 'rank': '4', 'suit': 'clubs', 'id': 'c2'},
+    {'is_joker': False, 'rank': '5', 'suit': 'clubs', 'id': 'c3'}
+]
+
+# Test 10 (INVALID): 3, 4, Joker, Joker, 7 - Consecutive Jokers in middle (should FAIL)
+cards_test10_invalid = [
+    {'is_joker': False, 'rank': '3', 'suit': 'hearts', 'id': 'c1'},
+    {'is_joker': False, 'rank': '4', 'suit': 'hearts', 'id': 'c2'},
+    {'is_joker': True, 'rank': 'Joker', 'suit': 'hearts', 'id': 'j1'},
+    {'is_joker': True, 'rank': 'Joker', 'suit': 'hearts', 'id': 'j2'},
+    {'is_joker': False, 'rank': '7', 'suit': 'hearts', 'id': 'c3'}
 ]
 
 print("=" * 60)
@@ -95,7 +120,7 @@ print(f"  ✓ Válido: {valid}, Mensaje: {message}")
 assert valid == True, "Este test debería ser válido"
 print()
 
-print("Test 6: Joker, Joker, 3, 4, 5 (dos Jokers al inicio como As y 2)")
+print("Test 6: Q, Joker, A, 2 (Joker como K - escalera cíclica)")
 valid, message = validate_run(cards_test6)
 print(f"  ✓ Válido: {valid}, Mensaje: {message}")
 assert valid == True, "Este test debería ser válido"
@@ -105,6 +130,29 @@ print("Test 7: A, 2, 3, 4 (As como 1, sin Jokers)")
 valid, message = validate_run(cards_test7)
 print(f"  ✓ Válido: {valid}, Mensaje: {message}")
 assert valid == True, "Este test debería ser válido"
+print()
+
+print("Test 8: K, A, 2, 3 (escalera cíclica sin Joker)")
+valid, message = validate_run(cards_test8)
+print(f"  ✓ Válido: {valid}, Mensaje: {message}")
+assert valid == True, "Este test debería ser válido"
+print()
+
+print("=" * 60)
+print("TESTS NEGATIVOS (que deben FALLAR)")
+print("=" * 60)
+print()
+
+print("Test 9 (INVÁLIDO): Joker, Joker, 3, 4, 5 (Jokers consecutivos)")
+valid, message = validate_run(cards_test9_invalid)
+print(f"  ✗ Válido: {valid}, Mensaje: {message}")
+assert valid == False, "Este test NO debería ser válido (Jokers consecutivos)"
+print()
+
+print("Test 10 (INVÁLIDO): 3, 4, Joker, Joker, 7 (Jokers consecutivos en medio)")
+valid, message = validate_run(cards_test10_invalid)
+print(f"  ✗ Válido: {valid}, Mensaje: {message}")
+assert valid == False, "Este test NO debería ser válido (Jokers consecutivos)"
 print()
 
 print("=" * 60)
