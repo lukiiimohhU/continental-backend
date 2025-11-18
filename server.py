@@ -288,6 +288,14 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str, player_id: st
                 await continue_to_next_round(room_code, player_id)
             elif action == 'leave_game':
                 await leave_game(room_code, player_id)
+            elif action == 'host_end_round':
+                await host_end_round(room_code, player_id, data.get('count_points', True))
+            elif action == 'host_end_game':
+                await host_end_game(room_code, player_id, data.get('count_points', True))
+            elif action == 'host_jump_to_round':
+                await host_jump_to_round(room_code, player_id, data.get('target_round'), data.get('count_points', True))
+            elif action == 'host_change_player_score':
+                await host_change_player_score(room_code, player_id, data.get('target_player_id'), data.get('new_score'))
                 
     except WebSocketDisconnect:
         manager.disconnect(room_code, player_id)
@@ -653,6 +661,173 @@ async def continue_to_next_round(room_code: str, player_id: str):
     # Advance to next round
     game_state['round'] += 1
     await setup_new_round(room_code)
+
+async def host_end_round(room_code: str, player_id: str, count_points: bool = True):
+    """Host ends current round and moves to RoundEndScreen"""
+    game_state = game_states.get(room_code)
+    if not game_state:
+        return
+
+    # Verify player is host
+    room = await db.rooms.find_one({"code": room_code})
+    if not room or room['host_id'] != player_id:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "Solo el anfitrión puede finalizar la ronda"
+        })
+        return
+
+    if game_state.get('round_ended'):
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "La ronda ya ha finalizado"
+        })
+        return
+
+    # End the round
+    game_state['round_ended'] = True
+
+    if count_points:
+        # Count points normally for all players with cards
+        for player in game_state['players']:
+            hand = game_state['player_hands'].get(player['id'], [])
+            if len(hand) > 0:
+                # Calculate points from remaining cards
+                points = sum(get_card_value(card) for card in hand)
+                player['score'] += points
+    # If count_points is False, we don't add any points (everyone gets 0)
+
+    # Broadcast round ended
+    await manager.broadcast_to_room(room_code, {
+        "type": "notification",
+        "message": f"El anfitrión ha finalizado la ronda {'contando puntos' if count_points else 'sin contar puntos'}"
+    })
+
+    await broadcast_game_state(room_code)
+
+async def host_end_game(room_code: str, player_id: str, count_points: bool = True):
+    """Host ends the game completely"""
+    game_state = game_states.get(room_code)
+    if not game_state:
+        return
+
+    # Verify player is host
+    room = await db.rooms.find_one({"code": room_code})
+    if not room or room['host_id'] != player_id:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "Solo el anfitrión puede finalizar la partida"
+        })
+        return
+
+    # End the round first
+    game_state['round_ended'] = True
+
+    if count_points:
+        # Count points normally for all players with cards
+        for player in game_state['players']:
+            hand = game_state['player_hands'].get(player['id'], [])
+            if len(hand) > 0:
+                points = sum(get_card_value(card) for card in hand)
+                player['score'] += points
+
+    # Mark game as over
+    game_state['game_over'] = True
+
+    # Broadcast game ended
+    await manager.broadcast_to_room(room_code, {
+        "type": "notification",
+        "message": f"El anfitrión ha finalizado la partida {'contando puntos' if count_points else 'sin contar puntos'}"
+    })
+
+    await broadcast_game_state(room_code)
+
+async def host_jump_to_round(room_code: str, player_id: str, target_round: int, count_points: bool = True):
+    """Host jumps to a specific round (1-7)"""
+    game_state = game_states.get(room_code)
+    if not game_state:
+        return
+
+    # Verify player is host
+    room = await db.rooms.find_one({"code": room_code})
+    if not room or room['host_id'] != player_id:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "Solo el anfitrión puede saltar de ronda"
+        })
+        return
+
+    # Validate target round
+    if target_round < 1 or target_round > 7:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "La ronda debe estar entre 1 y 7"
+        })
+        return
+
+    # End current round first
+    game_state['round_ended'] = True
+
+    if count_points:
+        # Count points for current round
+        for player in game_state['players']:
+            hand = game_state['player_hands'].get(player['id'], [])
+            if len(hand) > 0:
+                points = sum(get_card_value(card) for card in hand)
+                player['score'] += points
+
+    # Broadcast notification
+    await manager.broadcast_to_room(room_code, {
+        "type": "notification",
+        "message": f"El anfitrión saltó a la ronda {target_round} {'contando puntos' if count_points else 'sin contar puntos'}"
+    })
+
+    # Update to target round
+    game_state['round'] = target_round
+    game_state['round_ended'] = False
+    game_state['round_winner_name'] = None
+
+    # Setup the new round
+    await setup_new_round(room_code)
+
+async def host_change_player_score(room_code: str, player_id: str, target_player_id: str, new_score: int):
+    """Host changes a player's score"""
+    game_state = game_states.get(room_code)
+    if not game_state:
+        return
+
+    # Verify player is host
+    room = await db.rooms.find_one({"code": room_code})
+    if not room or room['host_id'] != player_id:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "Solo el anfitrión puede cambiar los puntos"
+        })
+        return
+
+    # Find target player
+    target_player = next((p for p in game_state['players'] if p['id'] == target_player_id), None)
+    if not target_player:
+        await manager.send_to_player(room_code, player_id, {
+            "type": "error",
+            "message": "Jugador no encontrado"
+        })
+        return
+
+    # Validate score
+    if new_score < 0:
+        new_score = 0
+
+    old_score = target_player['score']
+    target_player['score'] = new_score
+
+    # Broadcast notification
+    await manager.broadcast_to_room(room_code, {
+        "type": "notification",
+        "message": f"El anfitrión cambió los puntos de {target_player['name']} de {old_score} a {new_score}"
+    })
+
+    await broadcast_game_state(room_code)
 
 async def handle_card_request_timeout(room_code: str):
     try:
@@ -1440,7 +1615,39 @@ async def leave_game(room_code: str, player_id: str):
         await db.rooms.delete_one({"code": room_code})
         return
 
-    # Update room in database
+    # Check if leaving player was the host
+    room = await db.rooms.find_one({"code": room_code})
+    if room and room['host_id'] == player_id:
+        # Transfer host role to a random remaining player
+        new_host = random.choice(game_state['players'])
+        new_host_id = new_host['id']
+        new_host_name = new_host['name']
+
+        # Update host in database
+        await db.rooms.update_one(
+            {"code": room_code},
+            {"$set": {"host_id": new_host_id}}
+        )
+
+        # Update is_host flag in players list
+        for p in game_state['players']:
+            p['is_host'] = (p['id'] == new_host_id)
+
+        # Also update in database players array
+        await db.rooms.update_one(
+            {"code": room_code, "players.id": new_host_id},
+            {"$set": {"players.$.is_host": True}}
+        )
+
+        # Broadcast host transfer event
+        await manager.broadcast_to_room(room_code, {
+            "type": "host_transferred",
+            "new_host_id": new_host_id,
+            "new_host_name": new_host_name,
+            "message": f"{new_host_name} es ahora el anfitrión"
+        })
+
+    # Update room in database (remove player)
     await db.rooms.update_one(
         {"code": room_code},
         {"$pull": {"players": {"id": player_id}}}
