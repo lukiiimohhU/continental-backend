@@ -65,7 +65,8 @@ def create_deck(num_decks: int = 2) -> List[Dict]:
                     'id': str(uuid.uuid4()),
                     'is_joker': False
                 })
-        for _ in range(2):
+        # 3 Jokers per deck (changed from 2)
+        for _ in range(3):
             deck.append({
                 'suit': CardSuit.JOKER.value,
                 'rank': CardRank.JOKER.value,

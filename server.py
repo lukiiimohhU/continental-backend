@@ -148,7 +148,12 @@ game_states: Dict[str, Any] = {}
 card_request_tasks: Dict[str, Any] = {}
 
 def generate_room_code():
-    return ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6))
+    """Generate a unique 3-digit room code (100-999)"""
+    while True:
+        code = str(random.randint(100, 999))
+        # Ensure uniqueness
+        if code not in game_states:
+            return code
 
 @api_router.post("/room/create")
 async def create_room(request: CreateRoomRequest):
@@ -179,36 +184,63 @@ async def create_room(request: CreateRoomRequest):
 @api_router.post("/room/join")
 async def join_room(request: JoinRoomRequest):
     room = await db.rooms.find_one({"code": request.room_code})
-    
+
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
-    
-    if room.get('game_started'):
+
+    # Check if it's a mid-game join (during round_ended state)
+    game_state = game_states.get(request.room_code)
+    is_mid_game_join = game_state and game_state.get('round_ended', False)
+
+    if room.get('game_started') and not is_mid_game_join:
         raise HTTPException(status_code=400, detail="Game already started")
-    
+
     if len(room.get('players', [])) >= 10:
         raise HTTPException(status_code=400, detail="Room is full")
-    
+
     player_id = str(uuid.uuid4())
+
+    # Calculate starting score for mid-game joins
+    initial_score = 0
+    if is_mid_game_join and game_state:
+        # Find player with highest score
+        max_score = max((p['score'] for p in game_state['players']), default=0)
+        # Random score within ±20% of max score
+        min_score = int(max_score * 0.8)
+        max_range = int(max_score * 1.2)
+        initial_score = random.randint(min_score, max_range)
+
     player = Player(
         id=player_id,
         name=request.player_name,
         is_host=False,
-        score=0
+        score=initial_score
     )
-    
+
     await db.rooms.update_one(
         {"code": request.room_code},
         {"$push": {"players": player.model_dump()}}
     )
-    
+
+    # If mid-game join, add player to game state
+    if is_mid_game_join and game_state:
+        game_state['players'].append(player.model_dump())
+        # Initialize empty hand and melds for the new player
+        game_state['player_hands'][player_id] = []
+        game_state['player_melds'][player_id] = []
+
     await manager.broadcast_to_room(request.room_code, {
         "type": "player_joined",
-        "player": player.model_dump()
+        "player": player.model_dump(),
+        "mid_game_join": is_mid_game_join
     })
-    
-    logger.info(f"Player {request.player_name} joined room {request.room_code}")
-    
+
+    # If mid-game join, broadcast updated game state
+    if is_mid_game_join:
+        await broadcast_game_state(request.room_code)
+
+    logger.info(f"Player {request.player_name} joined room {request.room_code}{' (mid-game)' if is_mid_game_join else ''}")
+
     return {"room_code": request.room_code, "player_id": player_id, "player": player}
 
 @api_router.get("/room/{room_code}")
@@ -254,6 +286,8 @@ async def websocket_endpoint(websocket: WebSocket, room_code: str, player_id: st
                 await replace_joker(room_code, player_id, data.get('card_id'), data.get('target_player_id'), data.get('meld_index'), data.get('joker_index'), data.get('new_joker_position'))
             elif action == 'continue_to_next_round':  # NUEVO
                 await continue_to_next_round(room_code, player_id)
+            elif action == 'leave_game':
+                await leave_game(room_code, player_id)
                 
     except WebSocketDisconnect:
         manager.disconnect(room_code, player_id)
@@ -1344,11 +1378,93 @@ async def broadcast_game_state(room_code: str):
             except:
                 pass
 
+async def leave_game(room_code: str, player_id: str):
+    """Player voluntarily leaves the game"""
+    game_state = game_states.get(room_code)
+    if not game_state:
+        return
+
+    # Find player
+    player = next((p for p in game_state['players'] if p['id'] == player_id), None)
+    if not player:
+        return
+
+    player_name = player['name']
+
+    # Collect all cards from this player (hand + melds)
+    cards_to_return = []
+
+    # Add cards from hand
+    if player_id in game_state['player_hands']:
+        cards_to_return.extend(game_state['player_hands'][player_id])
+        del game_state['player_hands'][player_id]
+
+    # Add cards from melds
+    if player_id in game_state['player_melds']:
+        for meld in game_state['player_melds'][player_id]:
+            cards_to_return.extend(meld['cards'])
+        del game_state['player_melds'][player_id]
+
+    # Return cards to deck and shuffle
+    game_state['deck'].extend(cards_to_return)
+    random.shuffle(game_state['deck'])
+
+    # Remove player from players_laid_down if present
+    if player_id in game_state['players_laid_down']:
+        game_state['players_laid_down'].remove(player_id)
+
+    # Find current player index
+    current_index = game_state['current_player_index']
+    leaving_player_index = next((i for i, p in enumerate(game_state['players']) if p['id'] == player_id), None)
+
+    # Remove player from game
+    game_state['players'] = [p for p in game_state['players'] if p['id'] != player_id]
+
+    # Adjust current player index if necessary
+    if leaving_player_index is not None:
+        if leaving_player_index < current_index:
+            # Player leaving was before current player, decrement index
+            game_state['current_player_index'] = max(0, current_index - 1)
+        elif leaving_player_index == current_index:
+            # Current player is leaving, wrap around if necessary
+            if len(game_state['players']) > 0:
+                game_state['current_player_index'] = current_index % len(game_state['players'])
+            else:
+                game_state['current_player_index'] = 0
+
+    # If game is now empty, clean up
+    if len(game_state['players']) == 0:
+        # Remove game state
+        del game_states[room_code]
+        # Delete room from database
+        await db.rooms.delete_one({"code": room_code})
+        return
+
+    # Update room in database
+    await db.rooms.update_one(
+        {"code": room_code},
+        {"$pull": {"players": {"id": player_id}}}
+    )
+
+    # Disconnect player
+    manager.disconnect(room_code, player_id)
+
+    # Broadcast player left event
+    await manager.broadcast_to_room(room_code, {
+        "type": "player_left",
+        "player_id": player_id,
+        "player_name": player_name,
+        "message": f"{player_name} ha abandonado la partida"
+    })
+
+    # Broadcast updated game state
+    await broadcast_game_state(room_code)
+
 async def handle_player_disconnect(room_code: str, player_id: str):
     room = await db.rooms.find_one({"code": room_code})
     if not room:
         return
-    
+
     await manager.broadcast_to_room(room_code, {
         "type": "player_disconnected",
         "player_id": player_id
